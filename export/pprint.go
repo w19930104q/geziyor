@@ -13,9 +13,11 @@ func (*PrettyPrint) Export(exports chan interface{}) error {
 	for res := range exports {
 		dat, err := json.MarshalIndent(res, "", "  ")
 		if err != nil {
-			continue
+			return fmt.Errorf("JSON encoding error on exporter: %w", err)
 		}
-		fmt.Println(string(dat))
+		if _, err := fmt.Println(string(dat)); err != nil {
+			return fmt.Errorf("console writing error on exporter: %w", err)
+		}
 	}
 	return nil
 }

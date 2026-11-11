@@ -54,6 +54,12 @@ type Options struct {
 	// For extracting data
 	Exporters []export.Exporter
 
+	// Optional identifiers for Exporters, used to attribute errors returned by
+	// Geziyor.ExportErrors and ExporterResult.ID. The entry at index i names
+	// Exporters[i]; empty or missing entries fall back to a generated
+	// "<type>#<index>" identifier. Names should be unique.
+	ExporterNames []string
+
 	// Disable logging by setting this true
 	LogDisabled bool
 

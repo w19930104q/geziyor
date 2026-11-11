@@ -4,7 +4,6 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/geziyor/geziyor/cache"
 	"github.com/geziyor/geziyor/client"
-	"github.com/geziyor/geziyor/export"
 	"github.com/geziyor/geziyor/internal"
 	"github.com/geziyor/geziyor/metrics"
 	"github.com/geziyor/geziyor/middleware"
@@ -30,9 +29,15 @@ type Geziyor struct {
 	resMiddlewares []middleware.ResponseProcessor
 	rateLimiter    *rate.Limiter
 	wgRequests     sync.WaitGroup
+	wgDispatch     sync.WaitGroup
 	wgExporters    sync.WaitGroup
-	semGlobal      chan struct{}
-	semHosts       struct {
+	exportMu       sync.Mutex
+	exportResults  []ExporterResult
+	// exportInputClosed is set once Geziyor.Exports has been drained. It is
+	// used to distinguish a normal exporter exit from an early one.
+	exportInputClosed uint32
+	semGlobal         chan struct{}
+	semHosts          struct {
 		sync.RWMutex
 		hostSems map[string]chan struct{}
 	}
@@ -168,6 +173,10 @@ func (g *Geziyor) Start() {
 
 	g.wgRequests.Wait()
 	close(g.Exports)
+	// Wait until all items have been dispatched and every exporter has
+	// finished. Dispatch closes the per-exporter channels, which lets
+	// exporters that are still draining terminate.
+	g.wgDispatch.Wait()
 	g.wgExporters.Wait()
 	shutdownDoneChan <- struct{}{}
 	internal.Logger.Println("Scraping Finished")
@@ -320,45 +329,5 @@ func (g *Geziyor) interruptSignalWaiter(shutdownChan chan os.Signal, shutdownDon
 		case <-shutdownDoneChan:
 			return
 		}
-	}
-}
-
-func (g *Geziyor) startExporters() {
-	if len(g.Opt.Exporters) != 0 {
-		var exporterChans []chan interface{}
-
-		g.wgExporters.Add(len(g.Opt.Exporters))
-		for _, exporter := range g.Opt.Exporters {
-			exporterChan := make(chan interface{})
-			exporterChans = append(exporterChans, exporterChan)
-			go func(exporter export.Exporter) {
-				defer g.wgExporters.Done()
-				if err := exporter.Export(exporterChan); err != nil {
-					internal.Logger.Printf("exporter error: %s\n", err)
-				}
-			}(exporter)
-		}
-		go func() {
-			// When exports closed, close the exporter chans.
-			// Exports chan will be closed after all requests are handled.
-			defer func() {
-				for _, exporterChan := range exporterChans {
-					close(exporterChan)
-				}
-			}()
-			// Send incoming data from exports to all of the exporter's chans
-			for data := range g.Exports {
-				for _, exporterChan := range exporterChans {
-					exporterChan <- data
-				}
-			}
-		}()
-	} else {
-		g.wgExporters.Add(1)
-		go func() {
-			for range g.Exports {
-			}
-			g.wgExporters.Done()
-		}()
 	}
 }

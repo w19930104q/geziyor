@@ -148,6 +148,39 @@ geziyor.NewGeziyor(&geziyor.Options{
 }).Start()
 ```
 
+Exporters are isolated from each other. If an exporter returns an error, panics,
+or returns early, Geziyor stops delivering items to it and keeps delivering to
+healthy exporters. Slow exporters apply backpressure instead of buffering
+without bound. Give exporters stable identifiers with `ExporterNames` and
+inspect their final state after `Start`. When `ExporterNames` is omitted, the
+identifier is generated as `<type>#<index>`.
+
+```go
+g := geziyor.NewGeziyor(&geziyor.Options{
+    StartURLs:     []string{"http://quotes.toscrape.com/"},
+    ParseFunc:     quotesParse,
+    Exporters:     []export.Exporter{&export.JSON{}, &export.CSV{}},
+    ExporterNames: []string{"json", "csv"},
+})
+g.Start()
+
+for _, result := range g.ExportResults() {
+    if result.Err != nil {
+        log.Printf("exporter %s failed: %v", result.ID, result.Err)
+    } else if result.EarlyExit {
+        log.Printf("exporter %s stopped before the scrape ended", result.ID)
+    }
+}
+
+// Errors keep the original error per exporter, keyed by identifier.
+if err := g.ExportError(); err != nil {
+    log.Printf("export errors: %v", err)
+}
+```
+
+Built-in file exporters return their write, flush and close errors through
+this mechanism, so failures are no longer silent.
+
 
 ### Custom Requests - Passing Metadata To Callbacks
 

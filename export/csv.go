@@ -3,10 +3,11 @@ package export
 import (
 	"encoding/csv"
 	"fmt"
-	"github.com/geziyor/geziyor/internal"
 	"os"
 	"reflect"
 	"sort"
+
+	"github.com/geziyor/geziyor/internal"
 )
 
 // CSV exports response data as CSV streaming file
@@ -17,14 +18,14 @@ type CSV struct {
 }
 
 // Export exports response data as CSV streaming file
-func (e *CSV) Export(exports chan interface{}) error {
+func (e *CSV) Export(exports chan interface{}) (err error) {
 
 	// Create or append file
 	file, err := os.OpenFile(internal.DefaultString(e.FileName, "out.csv"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		return fmt.Errorf("output file creation error: %w", err)
 	}
-	defer file.Close()
+	defer func() { err = closeExportFile(file, err) }()
 
 	writer := csv.NewWriter(file)
 	writer.Comma = internal.DefaultRune(e.Comma, ',')
@@ -47,11 +48,16 @@ func (e *CSV) Export(exports chan interface{}) error {
 			}
 			sort.Strings(values)
 		}
-		if err := writer.Write(values); err != nil {
-			internal.Logger.Printf("CSV writing error on exporter: %v\n", err)
+		if writeErr := writer.Write(values); writeErr != nil {
+			err = fmt.Errorf("CSV writing error on exporter: %w", writeErr)
+			return err
 		}
 	}
 	writer.Flush()
+	if flushErr := writer.Error(); flushErr != nil {
+		err = fmt.Errorf("CSV flush error on exporter: %w", flushErr)
+		return err
+	}
 
 	return nil
 }
