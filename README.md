@@ -189,6 +189,49 @@ geziyor.NewGeziyor(&geziyor.Options{
 }).Start()
 ```
 
+## Replaying POST request bodies
+
+When Geziyor retries a failed request, the request body is normally already
+consumed and cannot be sent again. Enable body replay to buffer the body once,
+before the first network attempt, and fully replay it on every retry and on
+307/308 redirects. The mode is **disabled by default** and applies to plain
+HTTP requests only (rendered Chrome requests are unaffected).
+
+Bodies up to `BodyReplayMemoryLimit` bytes (**M**) stay in memory; larger bodies
+spill to a temporary file. Bodies larger than `BodyReplayMaxSize` bytes
+(**L**) fail with an error before any request is sent. The limits must satisfy
+`0 < M <= L`; an invalid configuration disables replay with a log message.
+
+```go
+geziyor.NewGeziyor(&geziyor.Options{
+    StartURLs: []string{"https://example.com"},
+    BodyReplayEnabled:     true,
+    BodyReplayMemoryLimit: 8 << 20,  // M: up to 8MB in memory, then a temp file
+    BodyReplayMaxSize:     64 << 20, // L: reject bodies larger than 64MB
+    StartRequestsFunc: func(g *geziyor.Geziyor) {
+        g.Post("https://example.com/submit", strings.NewReader(payload), nil)
+    },
+    ParseFunc: func(g *geziyor.Geziyor, r *client.Response) {
+        // ...
+    },
+}).Start()
+```
+
+Guarantees:
+
+- Unknown-length and non-seekable body streams are supported.
+- Memory usage never exceeds **M** plus one fixed read chunk; the full body is
+  never held in memory when it is larger than **M**.
+- Exceeding **L**, a body read failure, or a declared `Content-Length` that
+  does not match the actual body size fail the request without sending it, and
+  the error is reported once through the normal error path (`ErrorFunc`)
+  without being retried.
+- 307/308 redirects keep the original method and body, while 301/302/303 still
+  convert the method to GET. Cookies, redirect limits and retry counts keep
+  working as before.
+- The caller-provided body is closed exactly once; temporary files and handles
+  are released when the request finishes, even if every attempt failed.
+
 ## Benchmark
 
 **8748 request per seconds** on *Macbook Pro 15" 2016*

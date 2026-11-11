@@ -83,6 +83,9 @@ func NewGeziyor(opt *Options) *Geziyor {
 		AllocatorOptions:      chromedp.DefaultExecAllocatorOptions[:],
 		ProxyFunc:             opt.ProxyFunc,
 		PreActions:            opt.PreActions,
+		BodyReplay:            opt.BodyReplayEnabled,
+		BodyReplayMemoryLimit: opt.BodyReplayMemoryLimit,
+		BodyReplayMaxSize:     opt.BodyReplayMaxSize,
 	})
 	if opt.Cache != nil {
 		geziyor.Client.Transport = &cache.Transport{

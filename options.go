@@ -18,6 +18,21 @@ type Options struct {
 	// If empty, any domain is allowed
 	AllowedDomains []string
 
+	// BodyReplayEnabled enables buffering of request bodies before the first
+	// network attempt, so POST/PUT bodies are fully replayed on retries and
+	// 307/308 redirects. Plain HTTP requests only. Disabled by default.
+	BodyReplayEnabled bool
+
+	// BodyReplayMemoryLimit (M) is the maximum number of request body bytes
+	// held in memory while buffering for replay. Larger bodies spill to a
+	// temporary file. Must satisfy 0 < M <= BodyReplayMaxSize.
+	BodyReplayMemoryLimit int64
+
+	// BodyReplayMaxSize (L) is the maximum total request body size eligible
+	// for replay. Bodies exceeding it fail with an error before any request
+	// is sent. Must satisfy L >= BodyReplayMemoryLimit.
+	BodyReplayMaxSize int64
+
 	// Chrome headless browser WS endpoint.
 	// If you want to run your own Chrome browser runner, provide its endpoint in here
 	// For example: ws://localhost:3000

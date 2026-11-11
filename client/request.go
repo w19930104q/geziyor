@@ -32,6 +32,7 @@ type Request struct {
 	Actions []chromedp.Action
 
 	retryCounter int
+	bodyReplayer *bodyReplayer
 }
 
 // Cancel request

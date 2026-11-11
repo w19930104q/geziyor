@@ -38,6 +38,23 @@ type Options struct {
 	RemoteAllocatorURL    string
 	AllocatorOptions      []chromedp.ExecAllocatorOption
 	ProxyFunc             func(*http.Request) (*url.URL, error)
+
+	// BodyReplay enables buffering of request bodies before the first network
+	// attempt so they can be fully replayed on retries and 307/308 redirects.
+	// Plain HTTP requests only; rendered (Chrome) requests are not affected.
+	// Disabled by default.
+	BodyReplay bool
+
+	// BodyReplayMemoryLimit (M) is the maximum number of request body bytes
+	// held in memory while buffering for replay. Larger bodies spill to a
+	// temporary file. Must satisfy 0 < M <= BodyReplayMaxSize.
+	BodyReplayMemoryLimit int64
+
+	// BodyReplayMaxSize (L) is the maximum total request body size eligible
+	// for replay. Bodies exceeding it fail with an error before any request
+	// is sent. Must satisfy L >= BodyReplayMemoryLimit.
+	BodyReplayMaxSize int64
+
 	// Changing this will override the existing default PreActions for Rendered requests.
 	// Geziyor Response will be nearly empty. Because we have no way to extract response without default pre actions.
 	// So, if you set this, you should handle all navigation, header setting, and response handling yourself.
@@ -58,6 +75,14 @@ var (
 
 // NewClient creates http.Client with modified values for typical web scraper
 func NewClient(opt *Options) *Client {
+	// Validate body replay configuration: 0 < M <= L is required.
+	if opt.BodyReplay && (opt.BodyReplayMemoryLimit <= 0 || opt.BodyReplayMaxSize < opt.BodyReplayMemoryLimit) {
+		internal.Logger.Printf(
+			"Invalid body replay configuration (memory limit %d, max size %d, need 0 < M <= L), disabling body replay",
+			opt.BodyReplayMemoryLimit, opt.BodyReplayMaxSize)
+		opt.BodyReplay = false
+	}
+
 	// Default proxy function is http.ProxyFunction
 	var proxyFunction = http.ProxyFromEnvironment
 	if opt.ProxyFunc != nil {
@@ -92,10 +117,61 @@ func NewClient(opt *Options) *Client {
 
 // DoRequest selects appropriate request handler, client or Chrome
 func (c *Client) DoRequest(req *Request) (resp *Response, err error) {
+	// Prepare a replayable body once, before the first network attempt.
+	// Plain HTTP only. Preparation errors are not retried.
+	if !req.Rendered && c.opt.BodyReplay && req.Body != nil && req.Body != http.NoBody {
+		if err := c.prepareBodyReplay(req); err != nil {
+			return nil, err
+		}
+		defer req.bodyReplayer.cleanup()
+	}
+	return c.doRequest(req)
+}
+
+// prepareBodyReplay buffers req.Body so it can be replayed on retries and
+// 307/308 redirects. The original body is drained and closed exactly once.
+func (c *Client) prepareBodyReplay(req *Request) error {
+	rp := newBodyReplayer(req.Body, c.opt.BodyReplayMemoryLimit, c.opt.BodyReplayMaxSize)
+	if err := rp.prepare(); err != nil {
+		rp.cleanup()
+		return fmt.Errorf("preparing request body replay: %w", err)
+	}
+	if req.ContentLength >= 0 && req.ContentLength != rp.size {
+		rp.cleanup()
+		return fmt.Errorf("preparing request body replay: declared Content-Length %d does not match actual body size %d",
+			req.ContentLength, rp.size)
+	}
+	body, err := rp.getBody()
+	if err != nil {
+		rp.cleanup()
+		return fmt.Errorf("preparing request body replay: %w", err)
+	}
+	req.bodyReplayer = rp
+	req.ContentLength = rp.size
+	req.GetBody = rp.getBody
+	req.Body = body
+	return nil
+}
+
+// doRequest performs a single attempt and recurses for retries.
+func (c *Client) doRequest(req *Request) (resp *Response, err error) {
 	if req.Rendered {
 		resp, err = c.doRequestChrome(req)
 	} else {
+		// Rewind the body consumed by a previous attempt.
+		if req.bodyReplayer != nil && req.retryCounter > 0 {
+			body, berr := req.bodyReplayer.getBody()
+			if berr != nil {
+				return nil, fmt.Errorf("replaying request body: %w", berr)
+			}
+			req.Body = body
+		}
 		resp, err = c.doRequestClient(req)
+	}
+
+	// Cancelled requests are not retried.
+	if req.Cancelled || req.Context().Err() != nil {
+		return resp, err
 	}
 
 	// Retry on Error
@@ -103,7 +179,7 @@ func (c *Client) DoRequest(req *Request) (resp *Response, err error) {
 		if req.retryCounter < c.opt.RetryTimes {
 			req.retryCounter++
 			internal.Logger.Println("Retrying:", req.URL.String())
-			return c.DoRequest(req)
+			return c.doRequest(req)
 		}
 		return resp, err
 	}
@@ -113,7 +189,7 @@ func (c *Client) DoRequest(req *Request) (resp *Response, err error) {
 		if req.retryCounter < c.opt.RetryTimes {
 			req.retryCounter++
 			internal.Logger.Println("Retrying:", req.URL.String(), resp.StatusCode)
-			return c.DoRequest(req)
+			return c.doRequest(req)
 		}
 	}
 
